@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+[[ "$TRACE" ]] && set -x
+set -eo pipefail
+
+vars() {
+	MAINTAINER="${MAINTAINER:-followroger <fwxjj@163.com>}"
+	OWNER="${OWNER:-$(whoami)}"
+	BOARD="${BOARD:-amd64-usr}"
+	BUILDER_ID="${BUILDER_ID:-$(date +%s)}"
+}
+
+build_builder() {
+	local tag="$1"
+	Dockerdir="$(mktemp -d)"
+	cp builder "$Dockerdir"
+	cat <<'EO_BUILDER' | sed -e "s/%MAINTAINER%/$MAINTAINER/g" > $Dockerdir/Dockerfile 
+from alpine
+maintainer %MAINTAINER%
+run apk add --update squashfs-tools xz curl bash
+add builder /usr/local/bin/builder
+entrypoint ["builder"]
+EO_BUILDER
+	docker build --tag "$tag" "$Dockerdir"
+	rm -r "$Dockerdir"
+}
+
+build_dockerfile() {
+	local release="$1"
+	sed \
+		-e "s@%RELEASE%@$release@g" \
+		-e "s/%MAINTAINER%/$MAINTAINER/g" \
+	> coreos/Dockerfile
+}
+
+build_image() {
+	local release="$1"
+	build_builder "$BUILDER_ID"
+	docker run --rm --tty --privileged \
+	  --cpu-quota "-1" \
+		--volume "$PWD/coreos":/target \
+                --volume /tmp \
+		--env TARGET=/target --env TRACE=$TRACE \
+		"$BUILDER_ID" "$release"
+}
+
+main() {
+	local release="$1"
+	mkdir -p coreos
+	cat Dockerfile.template | build_dockerfile "$release"
+	build_image "$release"
+	docker inspect "$BUILDER_ID" >/dev/null 2>/dev/null \
+	&& docker rmi -f "$BUILDER_ID"
+}
+
+vars
+main $@
+exit $?
